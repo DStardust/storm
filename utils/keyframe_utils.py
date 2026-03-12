@@ -6,7 +6,7 @@ import os
 from io import BytesIO
 from PIL import Image
 
-def extract_keyframes_cv2(video_path, threshold=15.0, min_frame_gap=4):
+def extract_keyframes_cv2(video_path, threshold=15.0, min_frame_gap=8):
     """
     Adaptive Keyframe Extraction optimized for Egocentric HOI Videos.
     - Uses structural difference (frame diff) rather than global histogram.

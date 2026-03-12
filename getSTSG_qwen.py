@@ -290,6 +290,36 @@ def unify_operator_part_references(all_object_list, video_od_list):
 
     return reference_map
 
+def load_processed_videos(write_path):
+    processed_videos = set()
+
+    if not os.path.exists(write_path):
+        return processed_videos
+
+    with open(write_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    decoder = json.JSONDecoder()
+    pos = 0
+    n = len(content)
+
+    while pos < n:
+        while pos < n and content[pos].isspace():
+            pos += 1
+        if pos >= n:
+            break
+
+        try:
+            obj, end = decoder.raw_decode(content, pos)
+            if isinstance(obj, dict) and "video" in obj:
+                processed_videos.add(obj["video"])
+            pos = end
+        except json.JSONDecodeError:
+            print(f"[WARN] Failed to parse existing json at position {pos}, stop loading processed videos.")
+            break
+
+    return processed_videos
+
 if os.getenv("API_QWEN_OMNI"):
     qwen_client = create_client(os.getenv("API_QWEN_OMNI"), "https://dashscope.aliyuncs.com/compatible-mode/v1")
 else:
@@ -302,7 +332,7 @@ Model_dic = {"QWEN-OMNI": "qwen-omni-turbo-latest",
              "QWEN-VL-MAX": "qwen3-vl-flash",
              "QWEN-VL-235B": "qwen3-vl-235b-a22b-instruct"}
 
-device = "cuda:1" if torch.cuda.is_available() else "cpu"
+device = "cuda:0" if torch.cuda.is_available() else "cpu"
 torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
 OD_model_path = "/mnt/public/daiyang/benchmark_vstorm/models/Florence2-large"
@@ -318,7 +348,7 @@ write_path = "../processed_stsg/0312_1.json"
 os.makedirs(os.path.dirname(write_path), exist_ok=True)
 
 # 填入你需要批量处理的文件夹路径
-raw_videos_dir = "/mnt/public/daiyang/benchmark_vstorm/stsg/raw_videos/meccano/meccano_part/meccano_part"
+raw_videos_dir = "/mnt/public/daiyang/benchmark_vstorm/stsg/raw_videos/ego-ours/0112-1/0112-1"
 
 # 自动获取该文件夹下所有视频文件（支持mp4, mov, avi）
 video_path_list = [
@@ -332,13 +362,19 @@ processed_video_path = "/mnt/public/daiyang/benchmark_vstorm/stsg/processed_vide
 operator_part_debug_root = "../debug_operator_parts"
 example_frames_root = "../example_frames"
 
+processed_videos = load_processed_videos(write_path)
+print(f"Loaded {len(processed_videos)} processed videos from {write_path}")
 # 基于video创造视频级别STSG
 count = 0
 for video_id in range(0, len(video_path_list)):
     # 视频处理
     raw_video_path = video_path_list[video_id]
     # 视频缩放
-    video_path = scaling_video(raw_video_path, processed_video_path, fps = 4, max_token_lenth= 51200)
+    video_path = scaling_video(raw_video_path, processed_video_path, fps = 8, max_token_lenth= 51200)
+
+    if video_path in processed_videos:
+        print(f"[SKIP] Already processed: {video_path}")
+        continue
 
     segment_list = detect(video_path, ContentDetector(threshold=21))
     segment_moments = [[s.get_seconds(), e.get_seconds()] for s, e in segment_list] # 获得时间起点与终点
@@ -436,7 +472,7 @@ for video_id in range(0, len(video_path_list)):
     if DEBUG_MODE:
         print("frames_for_sam2:", frames_for_sam2)
     if len(frames_for_sam2) > 32: # Increased limit slightly and added truncation logic
-        print(f"{video_name} has {len(frames_for_sam2)} keyframes! Truncating to the first 100 frames to prevent massive cost and allow partial processing.")
+        print(f"{video_name} has {len(frames_for_sam2)} keyframes! Truncating to the first 32 frames to prevent massive cost and allow partial processing.")
         frames_for_sam2 = frames_for_sam2[:32]
         
         # We must also filter the segment lists so they only process what has been SAM2 tracked
