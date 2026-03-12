@@ -6,40 +6,79 @@ import os
 from io import BytesIO
 from PIL import Image
 
-def extract_keyframes_cv2(video_path, threshold=0.6):
+def extract_keyframes_cv2(video_path, threshold=15.0, min_frame_gap=4):
+    """
+    Adaptive Keyframe Extraction optimized for Egocentric HOI Videos.
+    - Uses structural difference (frame diff) rather than global histogram.
+    - Captures small, sudden local movements (like hands interacting).
+    - Ignores massive global shifts (like rapid head turning where 80%+ pixels completely change).
+    - Forces a minimum gap `min_frame_gap` to prevent frame explosion during continuous action.
+    """
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     dimensions = [width, height]
 
-    previous_hist = None
     keyframes = []
     frame_count = 0
-    
     frame_count_total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    print(frame_count_total)
-    
+    print(f"Total Frames: {frame_count_total}")
+
+    prev_gray = None
+    last_keyframe_idx = -min_frame_gap  # Allow frame 0 to be captured
+
+    # Force a keyframe at specific time intervals regardless of motion (e.g., every 1.5 seconds)
+    force_interval = int(fps * 1.5) if fps > 0 else 10
+
     while True:
         ret, frame = cap.read()
         if not ret:
             break
+            
+        # Optional: focus on the center/bottom area where hands usually operate
+        # cropped_frame = frame[int(height*0.2):, int(width*0.1):int(width*0.9)]
+        
+        # GaussianBlur is crucial to ignore video compression artifacts and tiny noise
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
-        hist = cv2.normalize(hist, hist).flatten()
+        gray = cv2.GaussianBlur(gray, (21, 21), 0)
 
-        if previous_hist is None:
-            previous_hist = hist
-            # keyframes.append((frame_count, frame))
+        if prev_gray is None:
+            prev_gray = gray
             keyframes.append(frame_count)
+            last_keyframe_idx = frame_count
+            frame_count += 1
             continue
-        hist_diff = cv2.compareHist(previous_hist, hist, cv2.HISTCMP_CORREL)
 
-        if hist_diff < threshold:
-            # keyframes.append((frame_count, frame))
+        if frame_count - last_keyframe_idx >= force_interval:
             keyframes.append(frame_count)
-            previous_hist = hist
+            last_keyframe_idx = frame_count
+            prev_gray = gray
+            frame_count += 1
+            continue
+
+        if frame_count - last_keyframe_idx >= min_frame_gap:
+            # Compute absolute difference between current and previous frame
+            frame_delta = cv2.absdiff(prev_gray, gray)
+            thresh = cv2.threshold(frame_delta, 25, 255, cv2.THRESH_BINARY)[1]
+            
+            # Count the percentage of changed pixels
+            changed_pixels = cv2.countNonZero(thresh)
+            total_pixels = gray.shape[0] * gray.shape[1]
+            change_ratio = (changed_pixels / float(total_pixels)) * 100.0
+
+            # 1. change_ratio > threshold: Normal local movement (hand reaching in, objects moving)
+            # 2. change_ratio < 70.0: Ignore massive full-screen blurring/whip pans common in ego-video
+            if change_ratio > threshold and change_ratio < 70.0:
+                keyframes.append(frame_count)
+                last_keyframe_idx = frame_count
+                prev_gray = gray
+
         frame_count += 1
+
+    # Ensure the very last frame is always included for terminal state
+    if frame_count_total - 1 not in keyframes and frame_count_total > 0:
+        keyframes.append(frame_count_total - 1)
 
     cap.release()
     return keyframes, frame_count_total, fps, dimensions

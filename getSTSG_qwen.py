@@ -305,11 +305,20 @@ SAM2_model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
 SAM2_predictor = build_sam2_video_predictor(SAM2_model_cfg, SAM2_checkpoint, device=device)
 
 # 注意修改
-write_path = "../processed_stsg/_test_0311.json"
+write_path = "../processed_stsg/_test_0312.json"
 os.makedirs(os.path.dirname(write_path), exist_ok=True)
 
 video_path_list = [
-    "/mnt/public/daiyang/benchmark_vstorm/stsg/raw_videos/fine-ego/selected_final/P01_102_1.mp4"
+    "/mnt/public/daiyang/benchmark_vstorm/stsg/raw_videos/ego-ours/0112/0112/IMG_7515.MOV",
+    "/mnt/public/daiyang/benchmark_vstorm/stsg/raw_videos/ego-ours/0112/0112/IMG_7516.mov",
+    "/mnt/public/daiyang/benchmark_vstorm/stsg/raw_videos/ego-ours/0112/0112/IMG_7517.mov",
+    "/mnt/public/daiyang/benchmark_vstorm/stsg/raw_videos/ego-ours/0112/0112/IMG_7519.MOV",
+    "/mnt/public/daiyang/benchmark_vstorm/stsg/raw_videos/ego-ours/0112/0112/IMG_7520.MOV",
+    "/mnt/public/daiyang/benchmark_vstorm/stsg/raw_videos/ego-ours/0112/0112/IMG_7521.MOV",
+    "/mnt/public/daiyang/benchmark_vstorm/stsg/raw_videos/ego-ours/0112/0112/IMG_7522.MOV",
+    "/mnt/public/daiyang/benchmark_vstorm/stsg/raw_videos/ego-ours/0112/0112/IMG_7524.MOV",
+    "/mnt/public/daiyang/benchmark_vstorm/stsg/raw_videos/ego-ours/0112/0112/IMG_7525.MOV",
+    "/mnt/public/daiyang/benchmark_vstorm/stsg/raw_videos/ego-ours/0112/0112/IMG_7526.MOV"
 ]
 # 新增的视频输出path(文件夹路径)
 processed_video_path = "/mnt/public/daiyang/benchmark_vstorm/stsg/processed_video"
@@ -322,7 +331,7 @@ for video_id in range(0, len(video_path_list)):
     # 视频处理
     raw_video_path = video_path_list[video_id]
     # 视频缩放
-    video_path = scaling_video(raw_video_path, processed_video_path, fps = 4, max_token_lenth= 51200)
+    video_path = scaling_video(raw_video_path, processed_video_path, fps = 8, max_token_lenth= 51200)
 
     segment_list = detect(video_path, ContentDetector(threshold=21))
     segment_moments = [[s.get_seconds(), e.get_seconds()] for s, e in segment_list] # 获得时间起点与终点
@@ -337,8 +346,23 @@ for video_id in range(0, len(video_path_list)):
         print("Segment_list:", segment_list)
 
     if len(segment_list) == 0:
-        print(f"{video_name} have no segment, parsing failed")
-        continue
+        print(f"{video_name} have no segment, fallback to entire video")
+        tmp_cap = cv2.VideoCapture(video_path)
+        if tmp_cap.isOpened():
+            from scenedetect import FrameTimecode
+            tot_frames = int(tmp_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            tot_fps = tmp_cap.get(cv2.CAP_PROP_FPS)
+            if tot_frames > 0 and tot_fps > 0:
+                tot_time = tot_frames / tot_fps
+                start_tc = FrameTimecode(timecode=0, fps=tot_fps)
+                end_tc = FrameTimecode(timecode=tot_frames, fps=tot_fps)
+                segment_list = [(start_tc, end_tc)]
+                segment_moments = [[0.0, tot_time]]
+        tmp_cap.release()
+        
+        if len(segment_list) == 0:
+            print(f"{video_name} fallback failed, skipping")
+            continue
 
     for i, s in enumerate(segment_moments):
         print('Scene {}: {:.1f}s, {:.1f}s'.format(i, *s))
@@ -462,7 +486,7 @@ for video_id in range(0, len(video_path_list)):
             # 判遍历已有的元素
             for exist_obj in all_object_list:
                 if np.sum( exist_obj["mask"][frames_for_sam2.index(frame_no)])  > 0: # 物品在这一帧有出现
-                    if iou(new_mask, exist_obj["mask"][frames_for_sam2.index(frame_no)]) > 0.9: #是同一物品
+                    if iou(new_mask, exist_obj["mask"][frames_for_sam2.index(frame_no)]) > 0.7: #是同一物品
                         object_cite_list[idx] = exist_obj["index"]
                         frame_od_list["reference"][idx] = exist_obj["index"]
                         exist_obj["label"].append(label)
@@ -881,21 +905,30 @@ find the most suitable {row["object"]} for the object of triplet. Your answer sh
                                     tracklet.add_object(len(segment_graph.objects))
                                     
                                 # Step 3.ii.a 将元素的动作整合
-                                prompt = f"""Given the same object {object_reference_label} highlighted in the start of video and {object_reference_label} highlighted in the end of video , describe the action of this object in the video. """
+                                prompt = f"""You are a fine-grained video action analyzer focusing on the first-person (egocentric) perspective.
+In this video segment, the object "{object_reference_label}" is highlighted. Please observe the physical relationship between the operator (or operator's specific body part like hands, feet, torso) and this object.
+Describe the exact physical interaction and state changes applied to "{object_reference_label}".
+Focus strictly on:
+1. The physical pose, action, or force exerted by the operator's body part (e.g., kicking, pressing, leaning against, firmly grasping).
+2. The resulting motion, deformation, or physical state change of "{object_reference_label}".
+Do NOT describe the background or unrelated objects. Provide a precise, single phrase describing the interaction. """
                                 NL_action = api_response_base64piclist(client=qwen_client, model=Model_dic["QWEN-VL-MAX"], prompt=prompt, base64_picture_list=sampling_frame_list_b64)
                                 # print("Step 3.ii.a:", NL_action)
 
                                 # Step 3.ii.b 将动作抽象为字典格式
-                                prompt = f"""For the given sentence, the task is to extract meaningful action for the given object. The action should be described using a verb or verb phrase.
-Let's take a few examples to understand how to extract.
-Question: Given the sentence "The man is walking on the street." Extract meaningful action for the object "man".
+                                prompt = f"""For the given sentence describing a physical interaction between an operator's body part and an object, extract the meaningful action components into a structured format. 
+You must capture the specific action (predicate) performed by the body part and the specific state change or manipulation applied to the object.
+Let's take a few examples:
+Question: "The right foot is forcefully kicking the soccer ball into the air."
+Answer: {{"action":["kicking the soccer ball", "launching into the air"]}}
+Question: "The operator's torso is leaning heavily against the wooden door, pushing it open."
+Answer: {{"action":["leaning against the wooden door", "pushing it open"]}}
+Question: "The left hand is twisting the bottle cap open while the right arm secures the bottle."
+Answer: {{"action":["twisting the bottle cap open", "securing the bottle"]}}
+Question: "The man is walking on the street."
 Answer: {{"action":["walking on the street"]}}
-Question: Given the sentence "The cat is jumping on the bed." Extract meaningful action for the object "cat".
-Answer: {{"action":["jumping on the bed"]}}
-Question: Given the sentence "The woman is sitting on the chair and holding a bottle." Extract meaningful action for the object "woman".
-Answer: {{"action":["sitting on the chair", "holding a bottle"]}}
 """
-                                full_prompt = prompt + f"Given the sentence \"{NL_action}\", extract meaningful action for the object \"{object_reference_label}\"."
+                                full_prompt = prompt + f"Given the sentence \"{NL_action}\", extract the meaningful actions involving the specific object \"{object_reference_label}\"."
                                 dict_action_raw = api_response_textonly(client=qwen_client, model=Model_dic["QWEN-PLUS"], prompt=full_prompt)
                                 dict_action_raw = parsing_str(dict_action_raw)
                                 # print("Step 3.ii.b:", dict_action_raw)
@@ -911,16 +944,19 @@ Answer: {{"action":["sitting on the chair", "holding a bottle"]}}
                                     filtered_action = re.findall(r'\"action\":[\"(.*?)\"]', dict_action_raw)
                                     
                                 for action in filtered_action:
-                                    prompt = f"""For the given action "{action}", extract the predicate and object. The predicate is a verb or verb phrase, and the object is the entity or noun that is affected by the action
-Let's take a few examples to understand how to extract.
-Question: Given the action "walking", extract the predicate and object.
-Answer: ["predicate":"walking", "object":"None"]
-Question: Given the action "jumping on the bed", extract the predicate and object.
-Answer: ["predicate":"jumping on", "object":"bed"]
-Question: Given the action "sitting on the chair", extract the predicate and object.
-Answer: ["predicate":"sitting on", "object":"chair"]
+                                    prompt = f"""For the given fine-grained action "{action}", extract the core interaction predicate and the target object affected. 
+The predicate must describe a specific mechanical, locomotor, or physical action (e.g., kicking, pressing, grasping, leaning on, stepping on).
+Let's take a few examples:
+Question: Given the action "stepping firmly on the brake pedal", extract the predicate and object.
+Answer: ["predicate":"stepping on", "object":"brake pedal"]
+Question: Given the action "twisting the bottle cap open", extract the predicate and object.
+Answer: ["predicate":"twisting open", "object":"bottle cap"]
+Question: Given the action "pushing the heavy door with the torso", extract the predicate and object.
+Answer: ["predicate":"pushing", "object":"heavy door"]
+Question: Given the action "kicking the ball", extract the predicate and object.
+Answer: ["predicate":"kicking", "object":"ball"]
 """
-                                    full_prompt = prompt + f"Given the action \"{action}\", extract the predicate and object. Answer: "
+                                    full_prompt = prompt + f"Given the action \"{action}\", extract the exact predicate and object. Answer: "
                                     response = api_response_textonly(client=qwen_client, model=Model_dic["QWEN-PLUS"], prompt=full_prompt)
                                     response = parsing_str(response)
 
