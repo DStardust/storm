@@ -223,6 +223,64 @@ Return only the label, with no explanation."""
                 if reference == obj["index"]:
                     od_entry["OD"]["labels"][label_idx] = normalized_label
 
+def bbox_area(bbox):
+    x1, y1, x2, y2 = bbox
+    return max(0, x2 - x1) * max(0, y2 - y1)
+
+def unify_operator_part_references(all_object_list, video_od_list):
+    """Unify same operator body-part instances to one canonical reference id.
+
+    Example: hands#1 and hands#2 that are both judged as operator parts
+    will be merged to the earliest index among them.
+    """
+    operator_groups = {}
+    for obj in all_object_list:
+        if not obj.get("is_operator_part", False):
+            continue
+        part_label = obj.get("label")
+        if part_label not in EGO_OPERATOR_BODY_LABELS:
+            continue
+        operator_groups.setdefault(part_label, []).append(obj["index"])
+
+    if not operator_groups:
+        return {}
+
+    reference_map = {}
+    for part_label, ref_list in operator_groups.items():
+        if len(ref_list) <= 1:
+            continue
+        canonical_ref = min(ref_list)
+        for ref in ref_list:
+            reference_map[ref] = canonical_ref
+        if DEBUG_MODE:
+            print(f"Unify operator part '{part_label}' refs {ref_list} -> {canonical_ref}")
+
+    if not reference_map:
+        return {}
+
+    for od_entry in video_od_list:
+        od = od_entry["OD"]
+        dedup = {}
+        for bbox, label, ref in zip(od["bboxes"], od["labels"], od["reference"]):
+            new_ref = reference_map.get(ref, ref)
+            dedup_key = (new_ref, label)
+            if dedup_key not in dedup:
+                dedup[dedup_key] = {"bbox": bbox, "label": label, "reference": new_ref}
+                continue
+            if bbox_area(bbox) > bbox_area(dedup[dedup_key]["bbox"]):
+                dedup[dedup_key]["bbox"] = bbox
+
+        od["bboxes"] = [item["bbox"] for item in dedup.values()]
+        od["labels"] = [item["label"] for item in dedup.values()]
+        od["reference"] = [item["reference"] for item in dedup.values()]
+
+    for old_ref, new_ref in reference_map.items():
+        if old_ref == new_ref:
+            continue
+        all_object_list[old_ref]["merged_into"] = new_ref
+
+    return reference_map
+
 if os.getenv("API_QWEN_OMNI"):
     qwen_client = create_client(os.getenv("API_QWEN_OMNI"), "https://dashscope.aliyuncs.com/compatible-mode/v1")
 else:
@@ -540,6 +598,13 @@ for video_id in range(0, len(video_path_list)):
         video_od_list=video_od_list,
         debug_dir=operator_part_debug_dir,
     )
+
+    unified_reference_map = unify_operator_part_references(
+        all_object_list=all_object_list,
+        video_od_list=video_od_list,
+    )
+    if DEBUG_MODE and unified_reference_map:
+        print("Unified operator part references:", unified_reference_map)
 
     if DEBUG_MODE:
         print("video_od_list after operator relabel:", video_od_list)
