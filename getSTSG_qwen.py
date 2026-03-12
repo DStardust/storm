@@ -302,7 +302,7 @@ Model_dic = {"QWEN-OMNI": "qwen-omni-turbo-latest",
              "QWEN-VL-MAX": "qwen3-vl-flash",
              "QWEN-VL-235B": "qwen3-vl-235b-a22b-instruct"}
 
-device = "cuda:0" if torch.cuda.is_available() else "cpu"
+device = "cuda:1" if torch.cuda.is_available() else "cpu"
 torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
 OD_model_path = "/mnt/public/daiyang/benchmark_vstorm/models/Florence2-large"
@@ -314,21 +314,19 @@ SAM2_model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
 SAM2_predictor = build_sam2_video_predictor(SAM2_model_cfg, SAM2_checkpoint, device=device)
 
 # 注意修改
-write_path = "../processed_stsg/0312.json"
+write_path = "../processed_stsg/0312_1.json"
 os.makedirs(os.path.dirname(write_path), exist_ok=True)
 
+# 填入你需要批量处理的文件夹路径
+raw_videos_dir = "/mnt/public/daiyang/benchmark_vstorm/stsg/raw_videos/meccano/meccano_part/meccano_part"
+
+# 自动获取该文件夹下所有视频文件（支持mp4, mov, avi）
 video_path_list = [
-    "/mnt/public/daiyang/benchmark_vstorm/stsg/raw_videos/ego-ours/0112/0112/IMG_7515.MOV",
-    "/mnt/public/daiyang/benchmark_vstorm/stsg/raw_videos/ego-ours/0112/0112/IMG_7516.mov",
-    "/mnt/public/daiyang/benchmark_vstorm/stsg/raw_videos/ego-ours/0112/0112/IMG_7517.mov",
-    "/mnt/public/daiyang/benchmark_vstorm/stsg/raw_videos/ego-ours/0112/0112/IMG_7519.MOV",
-    "/mnt/public/daiyang/benchmark_vstorm/stsg/raw_videos/ego-ours/0112/0112/IMG_7520.MOV",
-    "/mnt/public/daiyang/benchmark_vstorm/stsg/raw_videos/ego-ours/0112/0112/IMG_7521.MOV",
-    "/mnt/public/daiyang/benchmark_vstorm/stsg/raw_videos/ego-ours/0112/0112/IMG_7522.MOV",
-    "/mnt/public/daiyang/benchmark_vstorm/stsg/raw_videos/ego-ours/0112/0112/IMG_7524.MOV",
-    "/mnt/public/daiyang/benchmark_vstorm/stsg/raw_videos/ego-ours/0112/0112/IMG_7525.MOV",
-    "/mnt/public/daiyang/benchmark_vstorm/stsg/raw_videos/ego-ours/0112/0112/IMG_7526.MOV"
+    os.path.join(raw_videos_dir, f) 
+    for f in os.listdir(raw_videos_dir) 
+    if f.lower().endswith(('.mp4', '.mov', '.avi', '.mkv'))
 ]
+video_path_list.sort()  # 按文件名排序，保证处理顺序一致
 # 新增的视频输出path(文件夹路径)
 processed_video_path = "/mnt/public/daiyang/benchmark_vstorm/stsg/processed_video"
 operator_part_debug_root = "../debug_operator_parts"
@@ -340,7 +338,7 @@ for video_id in range(0, len(video_path_list)):
     # 视频处理
     raw_video_path = video_path_list[video_id]
     # 视频缩放
-    video_path = scaling_video(raw_video_path, processed_video_path, fps = 8, max_token_lenth= 51200)
+    video_path = scaling_video(raw_video_path, processed_video_path, fps = 4, max_token_lenth= 51200)
 
     segment_list = detect(video_path, ContentDetector(threshold=21))
     segment_moments = [[s.get_seconds(), e.get_seconds()] for s, e in segment_list] # 获得时间起点与终点
@@ -437,11 +435,25 @@ for video_id in range(0, len(video_path_list)):
 
     if DEBUG_MODE:
         print("frames_for_sam2:", frames_for_sam2)
-    if len(frames_for_sam2) > 50:
-        print(f"{video_name} has too many keyframes! Early-stopping to prevent massive cost!")
-        continue
+    if len(frames_for_sam2) > 32: # Increased limit slightly and added truncation logic
+        print(f"{video_name} has {len(frames_for_sam2)} keyframes! Truncating to the first 100 frames to prevent massive cost and allow partial processing.")
+        frames_for_sam2 = frames_for_sam2[:32]
+        
+        # We must also filter the segment lists so they only process what has been SAM2 tracked
+        last_valid_frame = frames_for_sam2[-1]
+        
+        valid_segments_count = 0
+        for i, segment_frames in enumerate(video_keyframes):
+            if segment_frames[0] > last_valid_frame:
+                break # This segment starts after our cutoff
+            # Truncate any frames in this segment that exceed the cutoff
+            video_keyframes[i] = [f for f in segment_frames if f <= last_valid_frame]
+            valid_segments_count += 1
+            
+        video_keyframes = video_keyframes[:valid_segments_count]
+        upsampling_base64_segments = upsampling_base64_segments[:valid_segments_count]
+        segment_list = segment_list[:valid_segments_count]
 
-    os.makedirs(saving_dir, exist_ok=True)
     videoframes_to_files(video_path, frames_for_sam2, saving_dir)
     SAM2_inference_state = SAM2_predictor.init_state(video_path = saving_dir)
     
