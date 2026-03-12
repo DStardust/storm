@@ -31,7 +31,12 @@ import cv2
 
 HUMAN_ENTITY_LABELS = {
     "person", "people", "human", "man", "woman", "boy", "girl",
-    "lady", "gentleman", "adult", "child"
+    "lady", "gentleman", "adult", "child",
+    "hand", "hands", "human hand", "person's hand", "someone's hand",
+    "arm", "arms", "human arm", "person's arm",
+    "leg", "legs", "foot", "feet", "human foot", "person's foot",
+    "finger", "fingers", "thumb", "index finger",
+    "torso", "body"
 }
 
 EGO_OPERATOR_BODY_LABELS = [
@@ -43,10 +48,14 @@ EGO_OPERATOR_BODY_LABELS = [
     "right foot",
     "left wrist",
     "right wrist",
+    "wrists",
     "left arm",
     "right arm",
-    "torso",
-    "operator body"
+    "arms",
+    "left leg",
+    "right leg",
+    "legs",
+    "torso"
 ]
 
 NON_OPERATOR_HUMAN_LABELS = [
@@ -165,7 +174,7 @@ def relabel_egocentric_operator_parts(video_path, frames_for_sam2, all_object_li
             if obj_mask is None or np.sum(obj_mask) == 0:
                 continue
 
-            obj_bbox = mask_to_bbox(obj_mask, threshold_min=0.05, threshold_max=0.25)
+            obj_bbox = mask_to_bbox(obj_mask, threshold_min=0.05, threshold_max=0.6)
             if not obj_bbox:
                 continue
 
@@ -305,7 +314,7 @@ SAM2_model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
 SAM2_predictor = build_sam2_video_predictor(SAM2_model_cfg, SAM2_checkpoint, device=device)
 
 # 注意修改
-write_path = "../processed_stsg/_test_0312.json"
+write_path = "../processed_stsg/0312.json"
 os.makedirs(os.path.dirname(write_path), exist_ok=True)
 
 video_path_list = [
@@ -851,6 +860,7 @@ find the most suitable {row["object"]} for the object of triplet. Your answer sh
 
 ### For Segment-level STSG Generation
 
+    
             if frame_id == 0:
                 segment_graph.objects = frame_graph.objects
                 segment_graph.relations = frame_graph.relations
@@ -858,12 +868,25 @@ find the most suitable {row["object"]} for the object of triplet. Your answer sh
                 replace_list = np.full(len(frame_graph.objects), -1)
                 seg_obj_list = segment_graph.objects
                 for new_obj in frame_graph.objects:
+                    found_match = False
                     for alt_obj in reversed(seg_obj_list): #注: 防止存在tracklet的情况下联系到老的元素
                         # 判断物品的继承
                         # 是同一元素
-                        if new_obj.distinct_label == alt_obj.distinct_label: # if new_obj.object_name == alt_obj.object_name: 
+                        if new_obj.distinct_label == alt_obj.distinct_label: 
+                            # ... (Motion detection logic temporarily simplified for stability, but we trigger the merge)
+                            found_match = True
                             
                             object_reference_label = all_object_list[new_obj.distinct_label]["label"]
+                            # --- Skip heavy LLM position change check for body parts or just merge them by default to avoid duplicates ---
+                            # For operator body parts, they move constantly, but they are conceptually the same "right hand"
+                            # We should just extend the time and bbox and NOT create highly fragmented tracklets for the ego-hand itself
+                            
+                            if object_reference_label in EGO_OPERATOR_BODY_LABELS:
+                                alt_obj.time.extend(new_obj.time)
+                                alt_obj.bbox.extend(new_obj.bbox)
+                                replace_list[new_obj.object_id] = alt_obj.object_id
+                                break # break the inner alt_obj loop
+                            
                             new_bbox = new_obj.bbox[-1]
                             alt_bbox = alt_obj.bbox[-1]
 
@@ -985,6 +1008,13 @@ Answer: ["predicate":"kicking", "object":"ball"]
                                         # for obj_ in segment_graph.objects:
                                         #     if obj_.distinct_label == object_:
                                         #         obj_.add_action(Act)
+                                
+                                # Even if position changed and we made an action, we should not duplicate the object physically 
+                                # UNLESS we explicitly want a new node in the graph for every state change.
+                                # For ego-centric body parts, we absolutely don't want duplicates.
+                                alt_obj.time.extend(new_obj.time)
+                                alt_obj.bbox.extend(new_obj.bbox)
+                                replace_list[new_obj.object_id] = alt_obj.object_id
                                 break
                             else:
                                 alt_obj.time.extend(new_obj.time)
@@ -994,10 +1024,8 @@ Answer: ["predicate":"kicking", "object":"ball"]
                         # 判断物品的演化关系
                     # print(new_obj)
 
-                    if replace_list[new_obj.object_id] == -1:
-
+                    if not found_match:
                         # print("Add new object:", all_object_list[new_obj.distinct_label]["label"])
-
                         replace_list[new_obj.object_id] = len(segment_graph.objects)
                         new_obj.object_id = len(segment_graph.objects)
                         segment_graph.objects.append(new_obj)
