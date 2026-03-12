@@ -1012,6 +1012,69 @@ Answer: ["predicate":"kicking", "object":"ball"]
                         segment_graph.relations.append(rel)
                         
             print("===> segment_graph")
+
+            # ---------------------------------------------------------
+            # NEW: Inject Virtual Egocentric Operator Node & Bind Body Parts
+            # ---------------------------------------------------------
+            operator_node_id = len(segment_graph.objects)
+            operator_virtual_label = -999 # Special distinct label for operator
+            
+            # Find if we have any body parts in this segment to link to
+            body_parts_in_segment = []
+            for sg_obj in segment_graph.objects:
+                if sg_obj.object_name in EGO_OPERATOR_BODY_LABELS:
+                    body_parts_in_segment.append(sg_obj)
+            
+            # If we found ego body parts, we create the operator node and link them
+            if len(body_parts_in_segment) > 0:
+                # 1. Create the Operator Virtual Node
+                operator_obj = stsg.Object(
+                    segment_id=segment_id,
+                    frame_id=0, # Virtual, spanning whole segment
+                    object_id=operator_node_id,
+                    object_name="camera wearer (operator)",
+                    distinct_label=operator_virtual_label,
+                    time=filtered_keyframes[0]/fps, # Start time of segment
+                    bbox=[0, 0, dim[0], dim[1]] # Full screen bbox
+                )
+                
+                # Expand time and bbox for the entire segment visually (virtual)
+                for t_idx in range(1, len(filtered_keyframes)):
+                    operator_obj.time.append(filtered_keyframes[t_idx]/fps)
+                    operator_obj.bbox.append([0, 0, dim[0], dim[1]])
+                    
+                operator_obj.add_attribute(stsg.Attribute("perspective", "first-person / egocentric"))
+                operator_obj.add_attribute(stsg.Attribute("role", "subject of interaction"))
+                segment_graph.add_object(operator_obj)
+                
+                # 2. Link Body Parts to the Operator Node
+                # Rule: <body_part> ---(part of)---> <operator>
+                for bp_obj in body_parts_in_segment:
+                    rel_part_of = stsg.Relationship(
+                        segment_id=segment_id,
+                        frame_id=0, # Applies globally to segment
+                        relation_id=len(segment_graph.relations),
+                        subject=bp_obj.object_id,
+                        predicate="part of",
+                        object=operator_node_id,
+                        time=bp_obj.time[-1] # or just take a timestamp
+                    )
+                    segment_graph.add_relation(rel_part_of)
+                    
+                    # Also link Operator ---(interacts using)---> Body Part (Optional reciprocal)
+                    rel_uses = stsg.Relationship(
+                        segment_id=segment_id,
+                        frame_id=0,
+                        relation_id=len(segment_graph.relations),
+                        subject=operator_node_id,
+                        predicate="manipulates objects using",
+                        object=bp_obj.object_id,
+                        time=bp_obj.time[-1]
+                    )
+                    segment_graph.add_relation(rel_uses)
+                    
+                print(f"Injected Operator node (ID {operator_node_id}) and bound {len(body_parts_in_segment)} body parts.")
+            # ---------------------------------------------------------
         
         sgs.append(segment_graph)
     
@@ -1048,7 +1111,17 @@ Answer: ["predicate":"kicking", "object":"ball"]
 
     output_video_list = []
     for obj in all_object_list:
-        prompt = f"""Summarize the characteristics of {obj["label"]} in a concise sentence starting with "{obj["label"]}" and without referencing other items, your answer should based on {obj["label"]} and its various attributes throughout the video: {obj["attributes"]}."""
+        if obj["label"] in EGO_OPERATOR_BODY_LABELS:
+            prompt = f"""Summarize the actions and states of the egocentric camera wearer's body part ({obj["label"]}) in this video.
+Start the sentence with "The operator's {obj["label"]}". Do NOT reference other items extensively unless directly interacted with. 
+Base your summary on these attributes and actions recorded throughout the video: {obj["attributes"]}.
+Emphasize HOW the operator used this body part to manipulate the environment."""
+        else:
+            prompt = f"""Summarize the characteristics and the interaction history of "{obj["label"]}" in this video.
+Start the sentence with "{obj["label"]}". 
+Because this is an egocentric (first-person) video, if this object was manipulated, please phrase it as "The operator manipulated the {obj["label"]}..." or similar active voice involving the operator.
+Base your summary on its attributes and physical state changes throughout the video: {obj["attributes"]}."""
+            
         response = api_response_textonly(client=qwen_client, model=Model_dic["QWEN-PLUS"], prompt=prompt)
         print("##prompt:", prompt)
         print("##response:", response)
