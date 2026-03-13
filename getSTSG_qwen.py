@@ -335,6 +335,12 @@ Model_dic = {"QWEN-OMNI": "qwen-omni-turbo-latest",
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
 torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
+if torch.cuda.is_available():
+    torch.autocast(device_type="cuda", dtype=torch.bfloat16).__enter__()
+    if torch.cuda.get_device_properties(0).major >= 8:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+
 OD_model_path = "/mnt/public/daiyang/benchmark_vstorm/models/Florence2-large"
 OD_model = AutoModelForCausalLM.from_pretrained(OD_model_path, torch_dtype=torch_dtype, trust_remote_code=True).to(device)
 OD_processor = AutoProcessor.from_pretrained(OD_model_path, trust_remote_code=True)
@@ -344,11 +350,11 @@ SAM2_model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
 SAM2_predictor = build_sam2_video_predictor(SAM2_model_cfg, SAM2_checkpoint, device=device)
 
 # 注意修改
-write_path = "../processed_stsg/0312_1.json"
+write_path = "../processed_stsg/0313.json"
 os.makedirs(os.path.dirname(write_path), exist_ok=True)
 
 # 填入你需要批量处理的文件夹路径
-raw_videos_dir = "/mnt/public/daiyang/benchmark_vstorm/stsg/raw_videos/ego-ours/0112-1/0112-1"
+raw_videos_dir = "/mnt/public/daiyang/benchmark_vstorm/stsg/raw_videos/ego-ours/ego_ours/ego_ours"
 
 # 自动获取该文件夹下所有视频文件（支持mp4, mov, avi）
 video_path_list = [
@@ -367,6 +373,11 @@ print(f"Loaded {len(processed_videos)} processed videos from {write_path}")
 # 基于video创造视频级别STSG
 count = 0
 for video_id in range(0, len(video_path_list)):
+    import gc
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     # 视频处理
     raw_video_path = video_path_list[video_id]
     # 视频缩放
@@ -589,6 +600,9 @@ for video_id in range(0, len(video_path_list)):
         new_dict = {"frame": frame_no, 
                     "OD": frame_od_list}
         video_od_list.append(new_dict)
+        
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     for obj in all_object_list:
         label_calculate_table = {}
